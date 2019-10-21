@@ -19,8 +19,16 @@ import json
 import datetime
 from bitmex_websocket import BitMEXWebsocket
 import bitmex
-import sys
-import pandas as pd
+import mysql.connector
+
+mydb = mysql.connector.connect(
+  host="localhost",
+  user="root",
+  passwd=""
+)
+
+print(mydb)
+
 results = OrderedDict()
 ws = BitMEXWebsocket(endpoint="https://testnet.bitmex.com/api/v1", symbol="XBTUSD",
                      api_key='1FBNDCT9pSzuZ-eM-TemIL-j', api_secret='UkzgGZCpwTVVVxXSJIfIOB8G4NcZjPUBx9BqngY0K6e_bJEC')
@@ -65,128 +73,6 @@ def check(trades):
             results[results_key]['size'] = sum_price_arr[k]['size_sum']
             results[results_key]['side'] = sum_price_arr[k]['side']
             results[results_key]['timestamp'] = sum_price_arr[k]['timestamp']
-
-    ### After Each New Message Parse see if there is a long and short opportunity. ###
-    long_logic(rolling_avg_time=int(sys.argv[1]), trades_in_db=int(sys.argv[2]),
-               indv_trade_count=int(sys.argv[3]), indv_trade_threshold=int(sys.argv[4]), exposure_threshold_long=int(sys.argv[5]))
-    short_logic(rolling_avg_time=int(sys.argv[1]), trades_in_db=int(sys.argv[2]),
-                indv_trade_count=int(sys.argv[3]), indv_trade_threshold=int(sys.argv[4]), exposure_threshold_short=int(sys.argv[6]))
-
-
-def long_logic(rolling_avg_time, trades_in_db, indv_trade_count, indv_trade_threshold, exposure_threshold_long):
-    positions = ws.positions()
-    bid_price = ws.get_instrument()['bidPrice']
-    if positions:
-        positions = positions[0]['currentQty']
-    else:
-        positions = 0
-
-    exposure, trade_count = rolling_total_exposure(rolling_avg_time)
-    last_trades = last_n_trades(indv_trade_count)
-
-    if positions > 0:
-        if long_sell_logic(last_trades, exposure, trade_count):
-            client.Order.Order_new(symbol='XBTUSD', orderQty=-positions, ordType='Market', execInst='Close').result()
-            # TODO: switch to limit orders.
-            time.sleep(2)
-    elif positions == 0:
-        if buy_long_logic(trades_in_db, exposure_threshold_long, last_trades,
-                          indv_trade_threshold, trade_count, exposure):
-            # TODO: Maybe use limit orders if can't find a profit
-            # order_id = None
-            # if not ws.open_orders(order_id):
-                order_id = client.Order.Order_new(symbol='XBTUSD', orderQty=10, ordType='Limit',
-                                                  price=bid_price).result()
-                print(order_id)
-            # else:
-            #     order_id = client.Order.Order_new(symbol='XBTUSD', orderQty=10, ordType='Limit',
-            #                                       price=bid_price).result()
-                time.sleep(2)
-
-
-def buy_long_logic(trades_in_db, exposure_threshold_long, last_trades, indv_trade_threshold, exposure, trade_count):
-    if trade_count > trades_in_db:
-        if exposure > exposure_threshold_long and last_trades_logic(last_trades, indv_trade_threshold, 'Buy', 5):
-            client.Order.Order_new(symbol='XBTUSD', orderQty=10, ordType='Market').result()
-            time.sleep(2)
-
-
-def short_logic(rolling_avg_time, trades_in_db, indv_trade_count, indv_trade_threshold, exposure_threshold_short):
-    positions = ws.positions()
-    ask_price = ws.get_instrument()['askPrice']
-
-    if positions:
-        positions = positions[0]['currentQty']
-    else:
-        positions = 0
-    exposure, trade_count = rolling_total_exposure(rolling_avg_time)
-    last_trades = last_n_trades(indv_trade_count)
-    if trade_count > trades_in_db:
-        if exposure < exposure_threshold_short and last_trades_logic(last_trades, indv_trade_threshold, 'Sell', 5)\
-                and positions == 0:
-            order_id = client.Order.Order_new(symbol='XBTUSD', orderQty=-10, ordType='Limit', price=ask_price).result()
-            print(order_id)
-
-            time.sleep(2)
-        elif positions < 0:
-            if short_buy_logic(last_trades):
-                client.Order.Order_new(symbol='XBTUSD', orderQty=-positions, ordType='Market', execInst='Close').result()
-                time.sleep(2)
-
-
-def long_sell_logic(last_trades, avg, trade_count):
-    if (last_trades_logic(last_trades, int(sys.argv[7]), 'Sell', int(sys.argv[8]))) or (trade_count < 5) or (avg < 500000):
-        return True
-    else:
-        return False
-
-
-def short_buy_logic(last_trades):
-    avg, trade_count = rolling_total_exposure(45000)
-    if (last_trades_logic(last_trades, int(sys.argv[7]), 'Buy', int(sys.argv[8]))) or (trade_count < 5) or (avg > -500000):
-        return True
-    else:
-        return False
-
-
-def last_trades_logic(trades, time_threshold, side, count_threshold):
-    trade_count = 0
-    lower_time = datetime.datetime.utcnow().timestamp() * 1000 - time_threshold
-    for trade in trades:
-        if trades[trade]['side'] == side and trades[trade]['timestamp'] > lower_time:
-            trade_count += 1
-        else:
-            pass
-    if trade_count >= count_threshold:
-        return True
-    else:
-        return False
-
-
-def last_n_trades(n):
-    rolling_results = results.copy()
-    temp_results = OrderedDict()
-    for x in list(reversed(list(rolling_results.values())))[0:n]:
-        temp_results[x['timestamp']] = x
-    return temp_results
-
-
-def rolling_total_exposure(rolling_avg_time):  # 300000 = 5 min in mili sec
-    lower_time = datetime.datetime.utcnow().timestamp()*1000 - rolling_avg_time
-    trade_count = 0
-    avg = 0
-    rolling_results = results.copy()
-    for timestamp in rolling_results:
-        if lower_time <= timestamp:
-            trade_count += 1
-            if results[timestamp]['side'] == 'Buy':
-                avg += results[timestamp]['size']
-            else:
-                avg -= results[timestamp]['size']
-        else:
-            del results[timestamp]
-    return avg, trade_count
-
 
 async def read():
     uri = "wss://www.bitmex.com/realtime?subscribe=trade:XBTUSD"
