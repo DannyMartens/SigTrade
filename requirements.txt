@@ -1,4 +1,1 @@
-bitmex
 websockets
-bitmex_websocket
-mysql-connector
